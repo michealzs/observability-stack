@@ -1,5 +1,8 @@
 # observability-stack
 
+[![CI](https://github.com/michealzs/observability-stack/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/michealzs/observability-stack/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Metrics, logs, alerting and dashboards for a small fleet of Linux hosts, as one Docker Compose project. Everything is provisioned from files in this repository: datasources, dashboards, alert rules, Slack routing, retention. `docker compose up -d` gives a working system with nothing to click through, and every change is a commit.
 
 It is built for the case where one machine monitors a handful of servers: a monitoring host runs Prometheus, Alertmanager, Loki and Grafana, the fleet runs node_exporter, and the monitoring host also watches its own containers and probes a list of URLs.
