@@ -1,0 +1,51 @@
+# Probe alerts from the blackbox exporter (jobs "blackbox-http" and "blackbox-icmp").
+
+groups:
+  - name: blackbox
+    rules:
+      - alert: BlackboxProbeFailed
+        expr: probe_success{job=~"blackbox-.*"} == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: Probe of {{ $labels.instance }} is failing
+          description: The {{ $labels.job }} probe of {{ $labels.instance }} has failed for 3 minutes.
+
+      - alert: BlackboxSlowProbe
+        expr: avg_over_time(probe_duration_seconds{job="blackbox-http"}[5m]) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }} is responding slowly"
+          description: The HTTP probe of {{ $labels.instance }} has averaged {{ $value | printf "%.2f" }}s over the last 5 minutes (threshold 2s).
+
+      - alert: BlackboxProbeHttpFailure
+        expr: probe_http_status_code{job="blackbox-http"} <= 199 or probe_http_status_code{job="blackbox-http"} >= 400
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.instance }} returned HTTP {{ $value }}"
+          description: The HTTP probe of {{ $labels.instance }} has returned status {{ $value }} for 3 minutes.
+
+      # Same alert name at two severities. The critical one inhibits the warning
+      # (see inhibit_rules in alertmanager.yml.tmpl).
+      - alert: BlackboxSslCertificateWillExpireSoon
+        expr: (probe_ssl_earliest_cert_expiry{job="blackbox-http"} - time()) / 86400 < 30
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: TLS certificate for {{ $labels.instance }} expires in under 30 days
+          description: The certificate served by {{ $labels.instance }} expires in {{ $value | printf "%.1f" }} days. Schedule the renewal.
+
+      - alert: BlackboxSslCertificateWillExpireSoon
+        expr: (probe_ssl_earliest_cert_expiry{job="blackbox-http"} - time()) / 86400 < 3
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: TLS certificate for {{ $labels.instance }} expires in under 3 days
+          description: The certificate served by {{ $labels.instance }} expires in {{ $value | printf "%.1f" }} days. Renew it now.

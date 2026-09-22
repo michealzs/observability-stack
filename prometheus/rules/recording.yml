@@ -1,0 +1,24 @@
+# Recording rules used by the Grafana dashboards. Names follow the
+# level:metric:operation convention.
+
+groups:
+  - name: node-recording
+    interval: 30s
+    rules:
+      - record: instance:node_cpu_utilisation:rate5m
+        expr: 1 - avg without (cpu, mode) (rate(node_cpu_seconds_total{job="node", mode="idle"}[5m]))
+
+      - record: instance:node_memory_utilisation:ratio
+        expr: 1 - (node_memory_MemAvailable_bytes{job="node"} / node_memory_MemTotal_bytes{job="node"})
+
+      - record: instance:node_load1_per_cpu:ratio
+        expr: node_load1{job="node"} / count without (cpu, mode) (node_cpu_seconds_total{job="node", mode="idle"})
+
+      - record: instance:node_network_receive_bytes:rate5m
+        expr: sum without (device) (rate(node_network_receive_bytes_total{job="node", device!~"lo|veth.*|br-.*|docker.*|virbr.*"}[5m]))
+
+      - record: instance:node_network_transmit_bytes:rate5m
+        expr: sum without (device) (rate(node_network_transmit_bytes_total{job="node", device!~"lo|veth.*|br-.*|docker.*|virbr.*"}[5m]))
+
+      - record: instance:node_disk_io_utilisation:rate5m
+        expr: max without (device) (rate(node_disk_io_time_seconds_total{job="node", device=~"(sd|nvme|vd|xvd|dm-|md).*"}[5m]))

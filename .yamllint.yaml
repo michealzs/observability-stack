@@ -1,0 +1,24 @@
+extends: default
+
+yaml-files:
+  - "*.yaml"
+  - "*.yml"
+  - "*.yml.tmpl"
+  - .yamllint.yaml
+
+ignore:
+  - .tmp/
+
+rules:
+  line-length:
+    max: 160
+  document-start: disable
+  truthy:
+    # GitHub Actions uses "on:" as a top level key.
+    check-keys: false
+  comments:
+    min-spaces-from-content: 1
+  braces:
+    max-spaces-inside: 1
+  brackets:
+    max-spaces-inside: 1

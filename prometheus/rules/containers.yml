@@ -1,0 +1,72 @@
+# Container alerts from cadvisor (job "cadvisor"). name!="" drops the cgroup
+# parents that cadvisor reports alongside real containers.
+
+groups:
+  - name: containers
+    rules:
+      # A container present five minutes ago is gone now, matched on name so a
+      # recreate (new id, same name) does not trigger it. Compose one-off
+      # containers ("<project>-<service>-run-<id>") are excluded.
+      - alert: ContainerKilled
+        expr: |
+          (container_last_seen{job="cadvisor", name!="", name!~".*-run-.*"} offset 5m)
+            unless on (instance, name) container_last_seen{job="cadvisor", name!=""}
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: Container {{ $labels.name }} has disappeared
+          description: >-
+            Container {{ $labels.name }} (image {{ $labels.image }}) on {{ $labels.instance }} was last seen at {{
+            $value | humanizeTimestamp }} and is no longer running.
+
+      - alert: ContainerHighCpu
+        expr: |
+          sum by (instance, name) (rate(container_cpu_usage_seconds_total{job="cadvisor", name!=""}[5m]))
+            / on (instance) group_left max by (instance) (machine_cpu_cores{job="cadvisor"}) * 100 > 80
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Container {{ $labels.name }} is using most of the host CPU
+          description: Container {{ $labels.name }} on {{ $labels.instance }} has used {{ $value | printf "%.0f" }}% of all host CPU cores for 10 minutes.
+
+      - alert: ContainerCpuThrottled
+        expr: |
+          sum by (instance, name) (rate(container_cpu_cfs_throttled_periods_total{job="cadvisor", name!=""}[5m]))
+            / sum by (instance, name) (rate(container_cpu_cfs_periods_total{job="cadvisor", name!=""}[5m])) > 0.25
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Container {{ $labels.name }} is being CPU throttled
+          description: >-
+            {{ $value | humanizePercentage }} of CPU periods for {{ $labels.name }} on {{ $labels.instance }} were
+            throttled over the last 15 minutes. Raise its cpus limit or find the hot loop.
+
+      # Containers without a memory limit report a limit of 2^63 bytes and never trigger this.
+      - alert: ContainerHighMemory
+        expr: |
+          sum by (instance, name) (container_memory_working_set_bytes{job="cadvisor", name!=""})
+            / sum by (instance, name) (container_spec_memory_limit_bytes{job="cadvisor", name!=""} > 0) * 100 > 85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Container {{ $labels.name }} is close to its memory limit
+          description: >-
+            Container {{ $labels.name }} on {{ $labels.instance }} is using {{ $value | printf "%.0f" }}% of its memory
+            limit. The kernel will OOM kill it at 100%.
+
+      - alert: ContainerVolumeUsage
+        expr: |
+          sum by (instance, name, device) (container_fs_usage_bytes{job="cadvisor", name!=""})
+            / sum by (instance, name, device) (container_fs_limit_bytes{job="cadvisor", name!=""} > 0) * 100 > 80
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Container {{ $labels.name }} filesystem is {{ $value | printf "%.0f" }}% full
+          description: >-
+            The filesystem {{ $labels.device }} used by {{ $labels.name }} on {{ $labels.instance }} is {{ $value |
+            printf "%.0f" }}% full. Check log output and writable layer growth.

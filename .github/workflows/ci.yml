@@ -1,0 +1,136 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PROMETHEUS_IMAGE: prom/prometheus:v3.14.0
+  ALERTMANAGER_IMAGE: prom/alertmanager:v0.34.1
+  ACTIONLINT_IMAGE: rhysd/actionlint:1.7.12
+  YAMLLINT_VERSION: 1.37.1
+  PYYAML_VERSION: 6.0.3
+
+jobs:
+  yamllint:
+    name: yamllint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install yamllint
+        run: python3 -m pip install "yamllint==${YAMLLINT_VERSION}"
+      - name: Lint YAML
+        run: python3 -m yamllint -c .yamllint.yaml --strict .
+
+  compose-config:
+    name: docker compose config
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Create .env from the example
+        run: cp .env.example .env
+      - name: Validate docker-compose.yml
+        run: docker compose -f docker-compose.yml config -q
+      - name: Validate with the debugging override applied
+        run: docker compose -f docker-compose.yml -f docker-compose.override.example.yml config -q
+      - name: Build the alertmanager image
+        run: docker compose -f docker-compose.yml build alertmanager
+
+  promtool:
+    name: promtool
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: promtool check config
+        run: >
+          docker run --rm -v "$PWD/prometheus:/etc/prometheus:ro"
+          --entrypoint promtool "$PROMETHEUS_IMAGE"
+          check config /etc/prometheus/prometheus.yml
+      - name: promtool check rules
+        run: >
+          docker run --rm -v "$PWD/prometheus:/etc/prometheus:ro"
+          --entrypoint sh "$PROMETHEUS_IMAGE"
+          -c 'promtool check rules /etc/prometheus/rules/*.yml'
+      - name: promtool test rules
+        run: >
+          docker run --rm -v "$PWD/prometheus:/etc/prometheus:ro"
+          --entrypoint sh "$PROMETHEUS_IMAGE"
+          -c 'promtool test rules /etc/prometheus/tests/*.yml'
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install PyYAML
+        run: python3 -m pip install "pyyaml==${PYYAML_VERSION}"
+      - name: Every alert has for, severity, summary and description
+        run: python3 scripts/check_rules.py prometheus/rules/*.yml
+
+  amtool:
+    name: amtool
+    runs-on: ubuntu-24.04
+    env:
+      # Placeholder values, only used to render the template for validation.
+      SLACK_WEBHOOK_URL: https://hooks.slack.example/services/REPLACE/WITH/YOUR-WEBHOOK-PATH
+      SLACK_CHANNEL: "#alerts"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Render alertmanager.yml with envsubst
+        run: |
+          if ! command -v envsubst > /dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends gettext-base
+          fi
+          mkdir -p .tmp
+          envsubst "\${SLACK_WEBHOOK_URL} \${SLACK_CHANNEL}" < alertmanager/alertmanager.yml.tmpl > .tmp/alertmanager.yml
+      - name: amtool check-config
+        run: >
+          docker run --rm
+          -v "$PWD/.tmp/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro"
+          -v "$PWD/alertmanager/templates:/etc/alertmanager/templates:ro"
+          --entrypoint amtool "$ALERTMANAGER_IMAGE"
+          check-config /etc/alertmanager/alertmanager.yml
+      - name: Entrypoint self-check in the built image
+        run: |
+          cp .env.example .env
+          docker compose run --rm --build --no-deps alertmanager check
+
+  grafana-dashboards:
+    name: grafana dashboards
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Dashboards parse and reference provisioned datasources
+        run: python3 scripts/check_dashboards.py grafana/dashboards/*.json
+
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: shellcheck
+        run: |
+          shellcheck --version
+          shellcheck scripts/*.sh alertmanager/*.sh
+      - name: bash -n
+        run: |
+          bash -n scripts/add-node.sh
+          sh -n alertmanager/entrypoint.sh
+
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: actionlint
+        run: docker run --rm -v "$PWD:/repo:ro" -w /repo "$ACTIONLINT_IMAGE" -color

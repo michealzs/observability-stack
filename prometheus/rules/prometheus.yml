@@ -1,0 +1,80 @@
+# Alerts about the monitoring stack itself.
+
+groups:
+  - name: prometheus
+    rules:
+      # Always firing. If Slack stops receiving Watchdog (via a dead man's switch)
+      # or the alerts dashboard shows it missing, the alerting path is broken.
+      - alert: Watchdog
+        expr: vector(1)
+        for: 0m
+        labels:
+          severity: info
+        annotations:
+          summary: Alerting pipeline is working
+          description: >-
+            This alert is always firing to prove that Prometheus, its rule evaluation and Alertmanager are all working.
+            It is routed to the null receiver.
+
+      # NodeExporterDown (rules/node.yml) covers job="node" with its own runbook.
+      - alert: PrometheusTargetMissing
+        expr: up{job!="node"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Target {{ $labels.job }} ({{ $labels.instance }}) is down
+          description: Prometheus has not been able to scrape {{ $labels.instance }} of job {{ $labels.job }} for 5 minutes.
+
+      - alert: PrometheusRuleEvaluationFailures
+        expr: increase(prometheus_rule_evaluation_failures_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: Prometheus rule evaluation failures
+          description: >-
+            Prometheus on {{ $labels.instance }} failed {{ $value | printf "%.0f" }} rule evaluations in the last 5
+            minutes. Alerts may not be firing. Check the rule group {{ $labels.rule_group }}.
+
+      - alert: PrometheusConfigReloadFailed
+        expr: prometheus_config_last_reload_successful != 1
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: Prometheus configuration reload failed
+          description: >-
+            Prometheus on {{ $labels.instance }} is running with its previous configuration because the last reload
+            failed. Run "make validate" and check the container logs.
+
+      - alert: PrometheusNotConnectedToAlertmanager
+        expr: prometheus_notifications_alertmanagers_discovered < 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Prometheus is not connected to any Alertmanager
+          description: Prometheus on {{ $labels.instance }} has discovered no Alertmanager for 5 minutes. No alert will be delivered until this is fixed.
+
+      - alert: AlertmanagerConfigReloadFailed
+        expr: alertmanager_config_last_reload_successful != 1
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: Alertmanager configuration reload failed
+          description: >-
+            Alertmanager on {{ $labels.instance }} is running with its previous configuration because the last reload
+            failed. Run "docker compose run --rm alertmanager check".
+
+      - alert: AlertmanagerNotificationsFailing
+        expr: rate(alertmanager_notifications_failed_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Alertmanager cannot deliver {{ $labels.integration }} notifications
+          description: >-
+            Alertmanager on {{ $labels.instance }} has been failing to send {{ $labels.integration }} notifications for
+            5 minutes. Check the webhook URL and outbound connectivity.

@@ -1,0 +1,11 @@
+# HTTP endpoints probed by the blackbox exporter with the http_2xx module.
+# Prometheus re-reads this file on its own.
+- targets:
+    - https://example.com
+  labels:
+    env: external
+- targets:
+    - http://grafana:3000/api/health
+    - http://prometheus:9090/-/healthy
+  labels:
+    env: internal

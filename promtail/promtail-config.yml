@@ -1,0 +1,51 @@
+# Promtail: ships Docker container logs (via the Docker socket) and the
+# monitoring host's /var/log/*.log files to Loki.
+#
+# ${HOST_LABEL} is expanded because the container runs with -config.expand-env=true.
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+  log_level: info
+
+positions:
+  filename: /promtail/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+    batchwait: 1s
+    batchsize: 1048576
+    backoff_config:
+      min_period: 500ms
+      max_period: 5m
+      max_retries: 10
+
+scrape_configs:
+  # Every container on this Docker host. Labels: container (name without the
+  # leading slash, matching cadvisor's "name"), compose_project, compose_service,
+  # stream (stdout/stderr) and host.
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 15s
+    relabel_configs:
+      - source_labels: [__meta_docker_container_name]
+        regex: "/(.*)"
+        target_label: container
+      - source_labels: [__meta_docker_container_label_com_docker_compose_project]
+        target_label: compose_project
+      - source_labels: [__meta_docker_container_label_com_docker_compose_service]
+        target_label: compose_service
+      - source_labels: [__meta_docker_container_log_stream]
+        target_label: stream
+      - target_label: host
+        replacement: ${HOST_LABEL}
+
+  # Plain text logs on the monitoring host itself.
+  - job_name: varlogs
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: varlogs
+          host: ${HOST_LABEL}
+          __path__: /var/log/*.log

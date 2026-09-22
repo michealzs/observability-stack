@@ -1,0 +1,104 @@
+# Host alerts from node_exporter (job "node").
+
+groups:
+  - name: node
+    rules:
+      - alert: HostHighCpuLoad
+        expr: (1 - avg without (cpu, mode) (rate(node_cpu_seconds_total{job="node", mode="idle"}[5m]))) * 100 > 85
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: High CPU load on {{ $labels.instance }}
+          description: CPU usage on {{ $labels.instance }} has been above 85% for 15 minutes (currently {{ $value | printf "%.1f" }}%).
+
+      - alert: HostOutOfMemory
+        expr: (node_memory_MemAvailable_bytes{job="node"} / node_memory_MemTotal_bytes{job="node"}) * 100 < 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Host {{ $labels.instance }} is almost out of memory
+          description: Only {{ $value | printf "%.1f" }}% of memory is available on {{ $labels.instance }} (threshold 10%).
+
+      - alert: HostOutOfDiskSpace
+        expr: |
+          (node_filesystem_avail_bytes{job="node", fstype!~"tmpfs|overlay|squashfs|ramfs|fuse.*"}
+            / node_filesystem_size_bytes{job="node", fstype!~"tmpfs|overlay|squashfs|ramfs|fuse.*"}) * 100 < 10
+          and on (instance, device, mountpoint) node_filesystem_readonly{job="node"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Disk almost full on {{ $labels.instance }} ({{ $labels.mountpoint }})
+          description: Filesystem {{ $labels.mountpoint }} ({{ $labels.device }}) on {{ $labels.instance }} has {{ $value | printf "%.1f" }}% free space left.
+
+      - alert: HostDiskWillFillIn24Hours
+        expr: |
+          (node_filesystem_avail_bytes{job="node", fstype!~"tmpfs|overlay|squashfs|ramfs|fuse.*"}
+            / node_filesystem_size_bytes{job="node", fstype!~"tmpfs|overlay|squashfs|ramfs|fuse.*"}) * 100 < 20
+          and on (instance, device, mountpoint)
+            predict_linear(node_filesystem_avail_bytes{job="node", fstype!~"tmpfs|overlay|squashfs|ramfs|fuse.*"}[6h], 24 * 3600) < 0
+          and on (instance, device, mountpoint) node_filesystem_readonly{job="node"} == 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: Disk on {{ $labels.instance }} ({{ $labels.mountpoint }}) will fill within 24 hours
+          description: >-
+            Filesystem {{ $labels.mountpoint }} on {{ $labels.instance }} is at {{ $value | printf "%.1f" }}% free and,
+            at the fill rate of the last 6 hours, runs out within a day.
+
+      - alert: HostOutOfInodes
+        expr: |
+          (node_filesystem_files_free{job="node", fstype!~"tmpfs|overlay|squashfs|ramfs|fuse.*"}
+            / node_filesystem_files{job="node", fstype!~"tmpfs|overlay|squashfs|ramfs|fuse.*"}) * 100 < 10
+          and on (instance, device, mountpoint) node_filesystem_readonly{job="node"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Filesystem {{ $labels.mountpoint }} on {{ $labels.instance }} is almost out of inodes
+          description: Only {{ $value | printf "%.1f" }}% of inodes are free on {{ $labels.mountpoint }} ({{ $labels.instance }}).
+
+      - alert: HostHighLoad
+        expr: node_load5{job="node"} / count without (cpu, mode) (node_cpu_seconds_total{job="node", mode="idle"}) > 2
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: High load on {{ $labels.instance }}
+          description: The 5 minute load average on {{ $labels.instance }} is {{ $value | printf "%.2f" }} per CPU core (threshold 2).
+
+      - alert: HostOomKillDetected
+        expr: increase(node_vmstat_oom_kill{job="node"}[10m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: OOM kill on {{ $labels.instance }}
+          description: >-
+            The kernel on {{ $labels.instance }} killed {{ $value | printf "%.0f" }} process(es) in the last 10 minutes.
+            Check dmesg and journalctl -k.
+
+      - alert: HostClockNotSynchronising
+        expr: min_over_time(node_timex_sync_status{job="node"}[5m]) == 0 and node_timex_maxerror_seconds{job="node"} >= 16
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Clock on {{ $labels.instance }} is not synchronising
+          description: >-
+            NTP has not synchronised the clock on {{ $labels.instance }} for 10 minutes and the estimated error is above
+            16 seconds. Check chrony or systemd-timesyncd.
+
+      - alert: NodeExporterDown
+        expr: up{job="node"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: node_exporter on {{ $labels.instance }} is unreachable
+          description: >-
+            Prometheus has not been able to scrape {{ $labels.instance }} for 5 minutes. The host may be down, the
+            exporter stopped, or a firewall rule changed.

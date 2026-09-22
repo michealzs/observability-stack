@@ -1,0 +1,17 @@
+# Debugging override: publish Prometheus and Alertmanager on localhost only.
+#
+#   cp docker-compose.override.example.yml docker-compose.override.yml
+#   docker compose up -d
+#   docker compose port prometheus 9090      # prints 127.0.0.1:9090
+#
+# docker-compose.override.yml is git-ignored. Remove it (or run
+# "docker compose -f docker-compose.yml up -d") to close the ports again.
+
+services:
+  prometheus:
+    ports:
+      - "127.0.0.1:9090:9090"
+
+  alertmanager:
+    ports:
+      - "127.0.0.1:9093:9093"

@@ -1,0 +1,143 @@
+# Unit tests for the alerting and recording rules. Run with
+#   promtool test rules prometheus/tests/rules_test.yml
+# (make validate does this inside the pinned Prometheus image).
+# Rule file paths are relative to this file. Time starts at the Unix epoch.
+
+rule_files:
+  - ../rules/node.yml
+  - ../rules/prometheus.yml
+  - ../rules/blackbox.yml
+  - ../rules/recording.yml
+
+evaluation_interval: 1m
+
+tests:
+  # A fleet host stops answering: NodeExporterDown fires after 5m, and the
+  # generic PrometheusTargetMissing stays quiet for job="node".
+  - interval: 1m
+    input_series:
+      - series: 'up{job="node", instance="10.0.10.11:9100", env="prod", role="web"}'
+        values: "0x10"
+      - series: 'up{job="node", instance="10.0.10.12:9100", env="prod", role="web"}'
+        values: "1x10"
+      - series: 'up{job="loki", instance="loki:3100"}'
+        values: "0x10"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: NodeExporterDown
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: NodeExporterDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: node
+              instance: 10.0.10.11:9100
+              env: prod
+              role: web
+            exp_annotations:
+              summary: node_exporter on 10.0.10.11:9100 is unreachable
+              description: >-
+                Prometheus has not been able to scrape 10.0.10.11:9100 for 5 minutes. The host may be down, the exporter
+                stopped, or a firewall rule changed.
+      - eval_time: 5m
+        alertname: PrometheusTargetMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: loki
+              instance: loki:3100
+            exp_annotations:
+              summary: Target loki (loki:3100) is down
+              description: Prometheus has not been able to scrape loki:3100 of job loki for 5 minutes.
+
+  # Memory pressure: 5% available for 5 minutes.
+  - interval: 1m
+    input_series:
+      - series: 'node_memory_MemAvailable_bytes{job="node", instance="10.0.10.21:9100", env="prod", role="db"}'
+        values: "400000000x10"
+      - series: 'node_memory_MemTotal_bytes{job="node", instance="10.0.10.21:9100", env="prod", role="db"}'
+        values: "8000000000x10"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: HostOutOfMemory
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: node
+              instance: 10.0.10.21:9100
+              env: prod
+              role: db
+            exp_annotations:
+              summary: Host 10.0.10.21:9100 is almost out of memory
+              description: Only 5.0% of memory is available on 10.0.10.21:9100 (threshold 10%).
+
+  # Watchdog is always firing.
+  - interval: 1m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: Watchdog
+        exp_alerts:
+          - exp_labels:
+              severity: info
+            exp_annotations:
+              summary: Alerting pipeline is working
+              description: >-
+                This alert is always firing to prove that Prometheus, its rule evaluation and Alertmanager are all
+                working. It is routed to the null receiver.
+
+  # Certificate expiry: 10 days out gets the warning only, 2 days out gets both
+  # severities (Alertmanager inhibits the warning in that case).
+  - interval: 1m
+    input_series:
+      - series: 'probe_ssl_earliest_cert_expiry{job="blackbox-http", instance="https://example.com", env="external"}'
+        values: "864000x5"
+      - series: 'probe_ssl_earliest_cert_expiry{job="blackbox-http", instance="https://shop.example.com", env="external"}'
+        values: "172800x5"
+    alert_rule_test:
+      - eval_time: 0m
+        alertname: BlackboxSslCertificateWillExpireSoon
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: blackbox-http
+              instance: https://example.com
+              env: external
+            exp_annotations:
+              summary: TLS certificate for https://example.com expires in under 30 days
+              description: The certificate served by https://example.com expires in 10.0 days. Schedule the renewal.
+          - exp_labels:
+              severity: warning
+              job: blackbox-http
+              instance: https://shop.example.com
+              env: external
+            exp_annotations:
+              summary: TLS certificate for https://shop.example.com expires in under 30 days
+              description: The certificate served by https://shop.example.com expires in 2.0 days. Schedule the renewal.
+          - exp_labels:
+              severity: critical
+              job: blackbox-http
+              instance: https://shop.example.com
+              env: external
+            exp_annotations:
+              summary: TLS certificate for https://shop.example.com expires in under 3 days
+              description: The certificate served by https://shop.example.com expires in 2.0 days. Renew it now.
+
+  # Recording rule: two CPUs each idle 50% of the time gives 0.5 utilisation.
+  - interval: 1m
+    input_series:
+      - series: 'node_cpu_seconds_total{job="node", instance="10.0.10.11:9100", cpu="0", mode="idle"}'
+        values: "0+30x10"
+      - series: 'node_cpu_seconds_total{job="node", instance="10.0.10.11:9100", cpu="1", mode="idle"}'
+        values: "0+30x10"
+      - series: 'node_cpu_seconds_total{job="node", instance="10.0.10.11:9100", cpu="0", mode="user"}'
+        values: "0+30x10"
+      - series: 'node_cpu_seconds_total{job="node", instance="10.0.10.11:9100", cpu="1", mode="user"}'
+        values: "0+30x10"
+    promql_expr_test:
+      - expr: instance:node_cpu_utilisation:rate5m
+        eval_time: 5m
+        exp_samples:
+          - labels: 'instance:node_cpu_utilisation:rate5m{instance="10.0.10.11:9100", job="node"}'
+            value: 0.5

@@ -1,0 +1,288 @@
+# Observability stack for a small fleet of Linux hosts.
+#
+#   metrics: node-exporter, cadvisor, blackbox -> Prometheus -> Alertmanager -> Slack
+#   logs:    Docker containers and /var/log   -> Promtail   -> Loki         -> Grafana
+#
+# Every image is pinned to a release tag. Nothing is published on the host except
+# Grafana on 127.0.0.1:3000. Copy docker-compose.override.example.yml to
+# docker-compose.override.yml to reach Prometheus and Alertmanager on localhost.
+
+name: observability-stack
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.14.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROM_RETENTION:-30d}
+      - --web.enable-lifecycle
+    environment:
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+      - ./prometheus/targets:/etc/prometheus/targets:ro
+      - prometheus_data:/prometheus
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      alertmanager:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2g
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - monitoring
+    logging: *default-logging
+
+  alertmanager:
+    # Built locally: upstream binaries plus envsubst, so the entrypoint can render
+    # alertmanager.yml.tmpl with the Slack webhook from the environment.
+    build:
+      context: ./alertmanager
+    image: observability-stack/alertmanager:v0.34.1
+    restart: unless-stopped
+    command:
+      - --storage.path=/alertmanager
+      - --web.external-url=${ALERTMANAGER_EXTERNAL_URL:-http://localhost:9093}
+    environment:
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:?set SLACK_WEBHOOK_URL in .env}
+      SLACK_CHANNEL: "${SLACK_CHANNEL:-#alerts}"
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ./alertmanager/alertmanager.yml.tmpl:/etc/alertmanager/alertmanager.yml.tmpl:ro
+      - alertmanager_data:/alertmanager
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:9093/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256m
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - monitoring
+    logging: *default-logging
+
+  grafana:
+    image: grafana/grafana:13.2.2
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://localhost:3000}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_AUTH_DISABLE_SIGNOUT_MENU: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_USERS_ALLOW_ORG_CREATE: "false"
+      GF_USERS_DEFAULT_THEME: dark
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/node-overview.json
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      loki:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512m
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - monitoring
+    logging: *default-logging
+
+  loki:
+    image: grafana/loki:3.7.8
+    restart: unless-stopped
+    command:
+      - -config.file=/etc/loki/loki-config.yml
+    environment:
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ./loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki_data:/loki
+    # No container healthcheck: the image is distroless (no shell, no HTTP client).
+    # Prometheus scrapes loki:3100 and PrometheusTargetMissing fires if it goes away.
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1g
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - monitoring
+    logging: *default-logging
+
+  promtail:
+    image: grafana/promtail:3.6.11
+    restart: unless-stopped
+    command:
+      - -config.file=/etc/promtail/promtail-config.yml
+      - -config.expand-env=true
+    environment:
+      HOST_LABEL: ${HOST_LABEL:-monitoring-host}
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ./promtail/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/log:/var/log:ro
+      - promtail_data:/promtail
+    # No container healthcheck: the image ships no HTTP client. Prometheus scrapes
+    # promtail:9080 and PrometheusTargetMissing covers it.
+    depends_on:
+      loki:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256m
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - monitoring
+    logging: *default-logging
+
+  node-exporter:
+    # Runs on the compose network so no host port is opened. CPU, memory, load,
+    # disk and filesystem metrics come from the host via /host. Network counters
+    # are per network namespace, so on this one container they describe the
+    # container's own interface. Fleet hosts run node_exporter as a systemd unit
+    # (docs/adding-hosts.md) and report the host's real interfaces.
+    image: prom/node-exporter:v1.12.1
+    restart: unless-stopped
+    pid: host
+    command:
+      - --path.rootfs=/host
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc|run/docker/.+|var/lib/docker/.+)($$|/)
+      - --collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs)$$
+    volumes:
+      - /:/host:ro,rslave
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:9100/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128m
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - monitoring
+    logging: *default-logging
+
+  cadvisor:
+    image: ghcr.io/google/cadvisor:v0.60.6
+    restart: unless-stopped
+    # cadvisor reads cgroups, /dev/kmsg (OOM events) and the Docker socket. The
+    # upstream instructions require privileged mode on cgroup v2 hosts.
+    privileged: true
+    command:
+      - --docker_only=true
+      - --housekeeping_interval=15s
+      - --store_container_labels=false
+      - --whitelisted_container_labels=com.docker.compose.project,com.docker.compose.service
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /dev/disk:/dev/disk:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512m
+    networks:
+      - monitoring
+    logging: *default-logging
+
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.28.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/blackbox_exporter/blackbox.yml
+    volumes:
+      - ./blackbox/blackbox.yml:/etc/blackbox_exporter/blackbox.yml:ro
+    # ICMP probes need raw sockets; everything else is dropped.
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_RAW
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:9115/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128m
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - monitoring
+    logging: *default-logging
+
+volumes:
+  prometheus_data: {}
+  alertmanager_data: {}
+  grafana_data: {}
+  loki_data: {}
+  promtail_data: {}
+
+networks:
+  monitoring:
+    driver: bridge

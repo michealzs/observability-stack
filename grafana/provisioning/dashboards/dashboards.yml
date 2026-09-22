@@ -1,0 +1,17 @@
+# Loads every JSON file under grafana/dashboards into the "Observability" folder.
+# Edits made in the UI are not saved back to disk (allowUiUpdates: false); change
+# the JSON files instead and Grafana picks them up within updateIntervalSeconds.
+
+apiVersion: 1
+
+providers:
+  - name: observability-stack
+    orgId: 1
+    folder: Observability
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

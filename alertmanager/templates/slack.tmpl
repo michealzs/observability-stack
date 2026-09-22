@@ -1,0 +1,22 @@
+{{/* Slack notification templates used by alertmanager.yml.tmpl */}}
+
+{{ define "slack.color" -}}
+{{ if eq .Status "firing" -}}
+  {{- if eq .CommonLabels.severity "critical" }}danger{{ else if eq .CommonLabels.severity "warning" }}warning{{ else }}#439FE0{{ end -}}
+{{- else }}good{{ end -}}
+{{- end }}
+
+{{ define "slack.title" -}}
+[{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}] {{ .CommonLabels.alertname }}
+{{- if .CommonLabels.job }} ({{ .CommonLabels.job }}){{ end }}
+{{- end }}
+
+{{ define "slack.text" -}}
+{{ range .Alerts -}}
+*{{ .Labels.severity | toUpper }}* {{ .Annotations.summary }}
+{{ .Annotations.description }}
+{{ if .Labels.instance }}instance: `{{ .Labels.instance }}`{{ end }}
+{{- if .GeneratorURL }}  <{{ .GeneratorURL }}|source>{{ end }}
+
+{{ end -}}
+{{- end }}

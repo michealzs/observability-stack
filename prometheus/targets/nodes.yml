@@ -1,0 +1,16 @@
+# Fleet hosts running node_exporter (job "node"). Prometheus re-reads this file
+# on its own; no restart is needed. Add hosts with scripts/add-node.sh or by
+# hand, one "- targets:" block per group of hosts that share labels.
+#
+# The same list feeds the blackbox-icmp job, so every host here is also pinged.
+- targets:
+    - "10.0.10.11:9100"
+    - "10.0.10.12:9100"
+  labels:
+    env: prod
+    role: web
+- targets:
+    - "10.0.10.21:9100"
+  labels:
+    env: prod
+    role: db
